@@ -1,0 +1,78 @@
+name: Build Android APK
+on:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - name: Create logo file from logo.png
+        run: |
+          test -f logo.png || { echo "logo.png not found in repository root"; exit 1; }
+          cp logo.png app-logo.png
+          sha256sum logo.png app-logo.png
+      - name: Prepare web files
+        run: |
+          mkdir www
+          cp index.html style.css app.js store.js manifest.json sw.js www/
+          cp icon-v6-*.png www/ || true
+      - name: Install Capacitor
+        run: |
+          npm init -y
+          npm i @capacitor/core@6 @capacitor/cli@6 @capacitor/android@6 @capacitor/share@6
+          npx cap init "Rasa used phone" com.rasa.usedphone --web-dir www
+          npx cap add android
+          sed -i 's#<string name="app_name">.*</string>#<string name="app_name">Rasa used phone</string>#; s#<string name="title_activity_main">.*</string>#<string name="title_activity_main">Rasa used phone</string>#' android/app/src/main/res/values/strings.xml
+      - name: App icon from app-logo.png
+        run: |
+          pip install pillow
+          RES=android/app/src/main/res
+          find $RES -name 'ic_launcher*' ! -name '*.xml' -delete
+          python3 - <<'PY'
+          from PIL import Image, ImageDraw
+          import os
+          res = 'android/app/src/main/res'
+          src = Image.open('app-logo.png').convert('RGBA')
+          dens = {'mdpi': (48, 108), 'hdpi': (72, 162), 'xhdpi': (96, 216), 'xxhdpi': (144, 324), 'xxxhdpi': (192, 432)}
+          for n, (s, f) in dens.items():
+              d = f'{res}/mipmap-{n}'
+              os.makedirs(d, exist_ok=True)
+              src.resize((s, s), Image.LANCZOS).convert('RGB').save(f'{d}/ic_launcher.png')
+              big = src.resize((s * 4, s * 4), Image.LANCZOS)
+              m = Image.new('L', (s * 4, s * 4), 0)
+              ImageDraw.Draw(m).ellipse([0, 0, s * 4 - 1, s * 4 - 1], fill=255)
+              r = Image.new('RGBA', (s * 4, s * 4), (0, 0, 0, 0))
+              r.paste(big, (0, 0), m)
+              r.resize((s, s), Image.LANCZOS).save(f'{d}/ic_launcher_round.png')
+              inner = int(f * 0.70)
+              fg = Image.new('RGBA', (f, f), (0, 0, 0, 0))
+              fg.alpha_composite(src.resize((inner, inner), Image.LANCZOS), ((f - inner) // 2, (f - inner) // 2))
+              fg.save(f'{d}/rasa_foreground.png')
+          os.makedirs(f'{res}/mipmap-anydpi-v26', exist_ok=True)
+          os.makedirs(f'{res}/values', exist_ok=True)
+          xml = '<?xml version="1.0" encoding="utf-8"?>\n<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">\n    <background android:drawable="@color/rasa_icon_bg"/>\n    <foreground android:drawable="@mipmap/rasa_foreground"/>\n</adaptive-icon>\n'
+          open(f'{res}/mipmap-anydpi-v26/ic_launcher.xml', 'w').write(xml)
+          open(f'{res}/mipmap-anydpi-v26/ic_launcher_round.xml', 'w').write(xml)
+          open(f'{res}/values/rasa_colors.xml', 'w').write('<?xml version="1.0" encoding="utf-8"?>\n<resources>\n    <color name="rasa_icon_bg">#FFFFFF</color>\n</resources>\n')
+          PY
+          ls -la $RES/mipmap-xxxhdpi
+      - name: Fixed signing key (same key for every build)
+        run: |
+          mkdir -p ~/.android
+          echo "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" | base64 -d > ~/.android/debug.keystore
+      - name: Build APK
+        run: |
+          npx cap sync android
+          cd android
+          ./gradlew assembleDebug
+      - uses: actions/upload-artifact@v4
+        with:
+          name: rasa-used-phone-apk
+          path: android/app/build/outputs/apk/debug/app-debug.apk
